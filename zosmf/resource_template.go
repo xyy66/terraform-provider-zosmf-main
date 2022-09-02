@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/tidwall/gjson"
@@ -51,10 +50,10 @@ func resourceZosmfLiberty() *schema.Resource {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
-			// "template_state": &schema.Schema{
-			// 	Type:     schema.TypeString,
-			// 	Required: true,
-			// },
+			"liberty_count": &schema.Schema{
+				Type:     schema.TypeInt,
+				Required: true,
+			},
 			// "tp_action_definition_file": &schema.Schema{
 			// 	Type:     schema.TypeString,
 			// 	Required: true,
@@ -76,77 +75,91 @@ func resourceZosmfLibertyCreate(ctx context.Context, d *schema.ResourceData, m i
 
 	// Warning or errors can be collected in a slice type
 	var diags diag.Diagnostics
+	limit, diags := getRdpInstanceLimit(ctx, d, m)
+	num, diags := getTemplateInstanceNum(ctx, d, m)
 
-	log.Printf("[DEBUG] zosmf login token : %v", client.Token)
+	log.Printf("[WARN] limit is :%d", limit)
+	log.Printf("[WARN] num is :%d", num)
+	cha := int(limit) - num
+	log.Printf("[WARN] liang zhe jian qu ge shu is :%d", cha)
+	liberty_count := d.Get("liberty_count").(int)
+	if cha > liberty_count {
+		log.Printf("zhengchangchuangjian")
+		log.Printf("[DEBUG] zosmf login token : %v", client.Token)
 
-	zosmf_template_name := d.Get("template_name")
+		zosmf_template_name := d.Get("template_name")
 
-	log.Printf("[DEBUG] template name     ... %s", zosmf_template_name)
+		log.Printf("[DEBUG] template name     ... %s", zosmf_template_name)
 
-	zosmf_workflow_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/psc/%s/actions/run", client.HostURL, zosmf_template_name)
-	// zosmf_workflow_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/psc/xyy0804/actions/run", client.HostURL)
-	log.Printf("[DEBUG] zOSMF liberty full path: %s", zosmf_workflow_uri_full)
+		zosmf_workflow_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/psc/%s/actions/run", client.HostURL, zosmf_template_name)
+		// zosmf_workflow_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/psc/xyy0804/actions/run", client.HostURL)
+		log.Printf("[DEBUG] zOSMF liberty full path: %s", zosmf_workflow_uri_full)
 
-	resp := postRequestAndResp(zosmf_workflow_uri_full, m)
+		resp := getRequestAndResp("POST", zosmf_workflow_uri_full, m)
 
-	resCode := resp.StatusCode
-	log.Printf("[DEBUG] zosmf template creation response code: %d", resCode)
-	defer resp.Body.Close()
-	body, _ := ioutil.ReadAll(resp.Body)
+		resCode := resp.StatusCode
+		log.Printf("[DEBUG] zosmf template creation response code: %d", resCode)
+		defer resp.Body.Close()
+		body, _ := ioutil.ReadAll(resp.Body)
 
-	//object_id := gjson.Get(string(body), "registry-info").Get("object-id")
-	object_id := gjson.Get(string(body), "registry-info.object-id")
-	d.Set("instance_id", object_id.String())
-	/*object_name := gjson.Get(string(body), "registry-info.object-name")
-	d.Set("software_instance_name", object_name.String())*/
+		//object_id := gjson.Get(string(body), "registry-info").Get("object-id")
+		object_id := gjson.Get(string(body), "registry-info.object-id")
+		d.Set("instance_id", object_id.String())
+		/*object_name := gjson.Get(string(body), "registry-info.object-name")
+		d.Set("software_instance_name", object_name.String())*/
 
-	log.Printf("[DEBUG] zosmf liberty creation response Body:%s", string(body))
+		log.Printf("[DEBUG] zosmf liberty creation response Body:%s", string(body))
 
-	// After the software instances created and being provisioned
-	//time.Sleep(360 * time.Second)
-	isSoftwareInstanceBeingProvisioned := false
-	fetchStatusCount := 0
-	for {
-		time.Sleep(10 * time.Second)
-		softwareServiceState, diags := getStateOfSoftwareInstance(ctx, d, m)
-		if diags != nil {
-			log.Printf("[DEBUG] Cannot get the state of software instance!")
-			break
-		} else if softwareServiceState == "provisioned" {
-			log.Printf("[DEBUG] Software instance has been provisioned.")
-			isSoftwareInstanceBeingProvisioned = true
-			break
-		} else if softwareServiceState == "being-provisioned" || softwareServiceState == "being-initialized" {
-			log.Printf("[DEBUG] The software instance is being provisioned!")
+		// After the software instances created and being provisioned
+		//time.Sleep(360 * time.Second)
+		isSoftwareInstanceBeingProvisioned := false
+		fetchStatusCount := 0
+		for {
+			time.Sleep(10 * time.Second)
+			softwareServiceState, diags := getStateOfSoftwareInstance(ctx, d, m)
+			if diags != nil {
+				log.Printf("[DEBUG] Cannot get the state of software instance!")
+				break
+			} else if softwareServiceState == "provisioned" {
+				log.Printf("[DEBUG] Software instance has been provisioned.")
+				isSoftwareInstanceBeingProvisioned = true
+				break
+			} else if softwareServiceState == "being-provisioned" || softwareServiceState == "being-initialized" {
+				log.Printf("[DEBUG] The software instance is being provisioned!")
+			} else {
+				log.Printf("[DEBUG] The state software instance provisioning failed!")
+				break
+			}
+			fetchStatusCount++
+			if fetchStatusCount > 30 {
+				break
+			}
+		}
+		// Get the address and port
+		if isSoftwareInstanceBeingProvisioned {
+			var libertyAddAndPort LibertyAddressAndPort
+			libertyAddAndPort, diags = getLibertyAddressAndPortFromSoftwareInstance(ctx, d, m)
+			if diags == nil {
+				libertyAddress := libertyAddAndPort.libertyAddress
+				libertyPort := libertyAddAndPort.libertyPort
+				//runningLiberty := map[string]string{"Hostname": "https://172.16.31.56", "Hostport": "9001", "url": "https://172.16.31.56:9001"}
+				runningLiberty := fmt.Sprintf("https://%s:%s", libertyAddress, libertyPort)
+				d.Set("running_liberty", runningLiberty)
+			} else {
+				log.Printf("[WARN] Cannot get liberty address and port!")
+				runningLiberty := "https://172.16.31.56:9091"
+				d.Set("running_liberty", runningLiberty)
+			}
+			d.SetId(uuid.New().String())
 		} else {
-			log.Printf("[DEBUG] The state software instance provisioning failed!")
-			break
+			log.Printf("[WARN] The liberty cannot be started!")
+			d.SetId(uuid.New().String())
 		}
-		fetchStatusCount++
-		if fetchStatusCount > 30 {
-			break
-		}
-	}
-	// Get the address and port
-	if isSoftwareInstanceBeingProvisioned {
-		var libertyAddAndPort LibertyAddressAndPort
-		libertyAddAndPort, diags = getLibertyAddressAndPortFromSoftwareInstance(ctx, d, m)
-		if diags == nil {
-			libertyAddress := libertyAddAndPort.libertyAddress
-			libertyPort := libertyAddAndPort.libertyPort
-			//runningLiberty := map[string]string{"Hostname": "https://172.16.31.56", "Hostport": "9001", "url": "https://172.16.31.56:9001"}
-			runningLiberty := fmt.Sprintf("https://%s:%s", libertyAddress, libertyPort)
-			d.Set("running_liberty", runningLiberty)
-		} else {
-			log.Printf("[WARN] Cannot get liberty address and port!")
-			runningLiberty := "https://172.16.31.56:9091"
-			d.Set("running_liberty", runningLiberty)
-		}
-		d.SetId(uuid.New().String())
 	} else {
-		log.Printf("[WARN] The liberty cannot be started!")
-		d.SetId(uuid.New().String())
+		diags = diag.Errorf("wufachuangjian failed!")
+		log.Printf("wufachuangjian zhineng%dge liberty", cha)
 	}
+
 	return diags
 }
 
@@ -166,7 +179,7 @@ func getStateOfSoftwareInstance(ctx context.Context, d *schema.ResourceData, m i
 	zosmf_get_software_instance_contents_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/scr/%s", client.HostURL, softwareInstanceId)
 	log.Printf("[DEBUG] zOSMF Get software instance state full path: %s", zosmf_get_software_instance_contents_uri_full)
 
-	resp := getRequestAndResp(zosmf_get_software_instance_contents_uri_full, m)
+	resp := getRequestAndResp("GET", zosmf_get_software_instance_contents_uri_full, m)
 
 	defer resp.Body.Close()
 	responseCode := resp.StatusCode
@@ -205,7 +218,7 @@ func getLibertyAddressAndPortFromSoftwareInstance(ctx context.Context, d *schema
 	zosmf_get_software_instance_variables_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/scr/%s/variables", client.HostURL, softwareInstanceId)
 	log.Printf("[DEBUG] zOSMF Get software instance variables full path: %s", zosmf_get_software_instance_variables_uri_full)
 
-	resp := getRequestAndResp(zosmf_get_software_instance_variables_uri_full, m)
+	resp := getRequestAndResp("GET", zosmf_get_software_instance_variables_uri_full, m)
 
 	defer resp.Body.Close()
 	responseCode := resp.StatusCode
@@ -281,7 +294,7 @@ func resourceZosmfLibertyDelete(ctx context.Context, d *schema.ResourceData, m i
 
 		log.Printf("[DEBUG] zOSMF Workflow full path: %s", zosmf_test_uri_full)
 
-		resp := postRequestAndResp(zosmf_test_uri_full, m)
+		resp := getRequestAndResp("POST", zosmf_test_uri_full, m)
 
 		defer resp.Body.Close()
 
@@ -351,7 +364,7 @@ func checkSoftwareInstanceExists(ctx context.Context, d *schema.ResourceData, m 
 	zosmf_check_software_instance_contents_uri_full := fmt.Sprintf("%s/provisioning/rest/1.0/scr/%s", client.HostURL, softwareInstanceId)
 	log.Printf("[DEBUG] zOSMF Get software instance state full path: %s", zosmf_check_software_instance_contents_uri_full)
 
-	resp := getRequestAndResp(zosmf_check_software_instance_contents_uri_full, m)
+	resp := getRequestAndResp("GET", zosmf_check_software_instance_contents_uri_full, m)
 
 	defer resp.Body.Close()
 	body, _ := ioutil.ReadAll(resp.Body)
@@ -383,10 +396,10 @@ func getFakeRunPublishedSoftwareServiceTemplateResponse() (string, diag.Diagnost
 	return jsonStr, diags
 }
 
-func getRequestAndResp(url string, m interface{}) http.Response {
+func getRequestAndResp(method string, url string, m interface{}) http.Response {
 	client := m.(Client)
 	req, err := http.NewRequest(
-		"GET",
+		method,
 		url,
 		nil,
 	)
@@ -407,27 +420,103 @@ func getRequestAndResp(url string, m interface{}) http.Response {
 	}
 	return *resp
 }
-func postRequestAndResp(url string, m interface{}) http.Response {
+func getTemplateTenantIdAndRdpId(ctx context.Context, d *schema.ResourceData, m interface{}) (string, diag.Diagnostics) {
+	log.Printf("[DEBUG] Called func %s .", "getTemplateTenantIdAndRdpId")
+	var diags diag.Diagnostics = nil
+	template_name := d.Get("template_name")
 	client := m.(Client)
-	req, err := http.NewRequest(
-		"POST",
-		url,
-		nil,
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	req.Header.Add("Host", client.HostURL)
-	req.Header.Add("Origin", client.HostURL)
-	req.Header.Add("Referer", fmt.Sprintf("%s/LogOnPanel.jsp", client.HostURL))
-	req.Header.Add("Content-Type", "application/json")
-	req.Header.Add("X-CSRF-ZOSMF-HEADER", "ZOSMF")
-	req.AddCookie(&http.Cookie{Name: "LtpaToken2", Value: client.Token, Path: "/", HttpOnly: true})
-	log.Printf("[DEBUG] zosmf create liberty request body: %s", req)
+	log.Printf("[DEBUG] zosmf login token : %v", client.Token)
 
-	resp, err := client.HTTPClient.Do(req)
-	if err != nil {
-		log.Fatal(err)
+	zosmf_get_templatename_tenantid_rdpid := fmt.Sprintf("%s/resource-mgmt/rest/1.0/tenants/%s", client.HostURL, "IYU000")
+	log.Printf("[DEBUG] zOSMF Get templatename tenantid rdpid full path: %s", zosmf_get_templatename_tenantid_rdpid)
+
+	resp := getRequestAndResp("GET", zosmf_get_templatename_tenantid_rdpid, m)
+
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+
+	log.Printf("[DEBUG] zOSMF Get templatename tenantid rdpid resp body: %s", string(body))
+
+	// tenant_id := gjson.Get(string(body), "tenant-list").Get("tenant-id").Array()
+	// log.Printf("[DEBUG] zOSMF Get templatename tenantid is ", tenant_id)
+	rdp_id_array := gjson.Get(string(body), "tenant-templates").Array()
+	log.Printf("[DEBUG] zOSMF Get templatename arrays  %s", rdp_id_array)
+	rdp_id := ""
+	for i := 0; i < len(rdp_id_array); i++ {
+		if template_name == rdp_id_array[i].Get("template-name").String() {
+			rdp_id = rdp_id_array[i].Get("rdp-id").String()
+			break
+		}
 	}
-	return *resp
+	log.Printf("[DEBUG] zosmf Get templatename rdpid: %s", rdp_id)
+	ioutil.ReadAll(resp.Body)
+	return rdp_id, diags
+}
+func getRdpInstanceLimit(ctx context.Context, d *schema.ResourceData, m interface{}) (int64, diag.Diagnostics) {
+	log.Printf("[DEBUG] Called func %s .", "getRdpInstanceLimit")
+	var diags diag.Diagnostics = nil
+	client := m.(Client)
+	log.Printf("[DEBUG] zosmf login token : %v", client.Token)
+	rdp_id, diags := getTemplateTenantIdAndRdpId(ctx, d, m)
+
+	zosmf_get_rdp_instance_limit := fmt.Sprintf("%s/resource-mgmt/rest/1.0/tenants/%s/rdp/%s", client.HostURL, "IYU000", rdp_id)
+	log.Printf("[DEBUG] zOSMF Get rdp instance limit full path: %s", zosmf_get_rdp_instance_limit)
+
+	resp := getRequestAndResp("GET", zosmf_get_rdp_instance_limit, m)
+
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+
+	log.Printf("[DEBUG] zOSMF Get rdp instance limit  resp body: %s", string(body))
+
+	rdp_instance_limit := gjson.Get(string(body), "rdp-instance-limit").Int()
+
+	log.Printf("[DEBUG] zosmf rdp_instance_limit: %d", rdp_instance_limit)
+	ioutil.ReadAll(resp.Body)
+	return rdp_instance_limit, diags
+}
+
+func getTemplateObjectId(ctx context.Context, d *schema.ResourceData, m interface{}) (string, diag.Diagnostics) {
+	log.Printf("[DEBUG] Called func %s .", "getTemplateObjectId")
+	var diags diag.Diagnostics = nil
+	client := m.(Client)
+	log.Printf("[DEBUG] zosmf login token : %v", client.Token)
+
+	zosmf_get_template_object_id := fmt.Sprintf("%s/provisioning/rest/1.0/scc?name=%s", client.HostURL, d.Get("template_name"))
+	log.Printf("[DEBUG] zOSMF Get zosmf get template object id full path: %s", zosmf_get_template_object_id)
+
+	resp := getRequestAndResp("GET", zosmf_get_template_object_id, m)
+
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+
+	log.Printf("[DEBUG] zOSMF Getzosmf get template object id resp body: %s", string(body))
+
+	object_id := gjson.Get(string(body), "scc-list").Array()[0].Get("object-id").String()
+
+	log.Printf("[DEBUG] zosmf rdp_instance_limit: %d", object_id)
+	ioutil.ReadAll(resp.Body)
+	return object_id, diags
+}
+func getTemplateInstanceNum(ctx context.Context, d *schema.ResourceData, m interface{}) (int, diag.Diagnostics) {
+	log.Printf("[DEBUG] Called func %s .", "getTemplateInstanceNum")
+	var diags diag.Diagnostics = nil
+	client := m.(Client)
+	log.Printf("[DEBUG] zosmf login token : %v", client.Token)
+	object_id, diags := getTemplateObjectId(ctx, d, m)
+	zosmf_get_template_instance_num := fmt.Sprintf("%s/provisioning/rest/1.0/scr?catalog-object-id=%s", client.HostURL, object_id)
+	log.Printf("[DEBUG] zOSMF Get zosmf get template instance num full path: %s", zosmf_get_template_instance_num)
+
+	resp := getRequestAndResp("GET", zosmf_get_template_instance_num, m)
+
+	defer resp.Body.Close()
+	body, _ := ioutil.ReadAll(resp.Body)
+
+	log.Printf("[DEBUG] zOSMF Getzosmf get template instance num resp body: %s", string(body))
+
+	num := len(gjson.Get(string(body), "scr-list").Array())
+
+	log.Printf("[DEBUG] zosmf instance num: %d", num)
+	ioutil.ReadAll(resp.Body)
+	return num, diags
 }

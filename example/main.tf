@@ -14,9 +14,9 @@ provider "zosmf" {
   allow_unverified_ssl = true
 }
  
-
+# terraform apply -var 'template_name=xxx' -var 'count=2'
 resource "zosmf_resource_liberty" "resourceLiberty" {
-  count = var.liberty_count
+  liberty_count = var.liberty_count
   template_name = var.template_name
 }
 
