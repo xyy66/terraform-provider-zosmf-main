@@ -1,7 +1,0 @@
-make --dry-run --always-make --keep-going --print-directory
-make: Entering directory `/Users/yuzhejun/Downloads/terraform-provider-zosmf-main'
-go build -o terraform-provider-zosmf
-mkdir -p ~/.terraform.d/plugins/ibm.com/zos/zosmf/0.1/darwin_amd64
-mv terraform-provider-zosmf ~/.terraform.d/plugins/ibm.com/zos/zosmf/0.1/darwin_amd64
-make: Leaving directory `/Users/yuzhejun/Downloads/terraform-provider-zosmf-main'
- 
